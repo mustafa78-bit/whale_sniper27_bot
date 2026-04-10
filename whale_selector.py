@@ -3,12 +3,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass, asdict
-from typing import List, Dict, Any, Optional
 import requests
-
-# =========================================================
-# AYARLAR
-# =========================================================
 
 LAST_N_TRADES = 6
 
@@ -30,9 +25,6 @@ OUTPUT_FILE = "whale_groups.json"
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 CHAT_ID = os.environ.get("CHAT_ID", "")
 
-# =========================================================
-# DATA CLASS
-# =========================================================
 
 @dataclass
 class WhalePerformance:
@@ -48,15 +40,14 @@ class WhalePerformance:
     stability_score: float
     note: str
 
-# =========================================================
-# HELPER
-# =========================================================
 
 def sort_trades_desc(trades):
     return sorted(trades, key=lambda x: x["closed_at"], reverse=True)
 
+
 def take_last_n_closed_trades(trades, n=LAST_N_TRADES):
     return sort_trades_desc(trades)[:n]
+
 
 def calc_stability_score(pnls):
     if not pnls:
@@ -73,9 +64,6 @@ def calc_stability_score(pnls):
 
     return max(0, min(100, round(score, 2)))
 
-# =========================================================
-# CLASSIFY
-# =========================================================
 
 def classify_last_6(trades):
     if len(trades) < LAST_N_TRADES:
@@ -83,7 +71,6 @@ def classify_last_6(trades):
 
     wallet = trades[0]["wallet"]
     last6 = take_last_n_closed_trades(trades)
-
     pnls = [float(t["pnl_percent"]) for t in last6]
 
     wins = sum(1 for x in pnls if x > 0)
@@ -94,7 +81,6 @@ def classify_last_6(trades):
     win_rate = round((wins / LAST_N_TRADES) * 100, 2)
     stability = calc_stability_score(pnls)
 
-    # ELITE
     if (
         wins >= ELITE_MIN_WINS
         and total_pnl >= ELITE_MIN_TOTAL_PNL
@@ -103,14 +89,19 @@ def classify_last_6(trades):
         and stability >= ELITE_MIN_STABILITY
     ):
         return WhalePerformance(
-            wallet, "ELITE", "⭐⭐⭐⭐⭐⭐",
-            wins, losses, win_rate,
-            total_pnl, avg_pnl,
-            big_losses, stability,
-            "Elite balina"
+            wallet=wallet,
+            group="ELITE",
+            stars="⭐⭐⭐⭐⭐⭐",
+            wins=wins,
+            losses=losses,
+            win_rate=win_rate,
+            total_pnl_percent=total_pnl,
+            avg_pnl_percent=avg_pnl,
+            big_losses=big_losses,
+            stability_score=stability,
+            note="Elite balina",
         )
 
-    # WATCH
     if (
         wins >= WATCH_MIN_WINS
         and total_pnl >= WATCH_MIN_TOTAL_PNL
@@ -118,31 +109,34 @@ def classify_last_6(trades):
         and stability >= WATCH_MIN_STABILITY
     ):
         return WhalePerformance(
-            wallet, "WATCH", "👀",
-            wins, losses, win_rate,
-            total_pnl, avg_pnl,
-            big_losses, stability,
-            "Takip balinası"
+            wallet=wallet,
+            group="WATCH",
+            stars="👀",
+            wins=wins,
+            losses=losses,
+            win_rate=win_rate,
+            total_pnl_percent=total_pnl,
+            avg_pnl_percent=avg_pnl,
+            big_losses=big_losses,
+            stability_score=stability,
+            note="Takip balinası",
         )
 
     return None
 
-# =========================================================
-# CORE
-# =========================================================
 
 def split_whales(trades):
     grouped = {}
 
     for t in trades:
-        grouped.setdefault(t["wallet"], []).append(t)
+        wallet = str(t["wallet"]).strip()
+        grouped.setdefault(wallet, []).append(t)
 
     elite = []
     watch = []
 
     for wallet, tlist in grouped.items():
         result = classify_last_6(tlist)
-
         if not result:
             continue
 
@@ -151,26 +145,30 @@ def split_whales(trades):
         else:
             watch.append(result)
 
+    elite.sort(
+        key=lambda x: (x.win_rate, x.total_pnl_percent, x.stability_score),
+        reverse=True,
+    )
+    watch.sort(
+        key=lambda x: (x.win_rate, x.total_pnl_percent, x.stability_score),
+        reverse=True,
+    )
+
     return {
         "elite": [asdict(x) for x in elite],
-        "watch": [asdict(x) for x in watch]
+        "watch": [asdict(x) for x in watch],
     }
 
-# =========================================================
-# FILE
-# =========================================================
 
 def load_trades(path="closed_whale_trades.json"):
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
+
 def save_output(data):
     with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
-# =========================================================
-# TELEGRAM
-# =========================================================
 
 def send_telegram(msg):
     if not BOT_TOKEN or not CHAT_ID:
@@ -178,31 +176,49 @@ def send_telegram(msg):
         return
 
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
+    requests.post(
+        url,
+        data={
+            "chat_id": CHAT_ID,
+            "text": msg,
+            "disable_web_page_preview": True,
+        },
+        timeout=20,
+    )
+
 
 def build_msg(data):
     lines = []
     lines.append("🐋 WHALE SON 6")
 
-    lines.append("\n🏆 ELITE")
-    for w in data["elite"][:5]:
-        lines.append(f"{w['wallet']} | WR %{w['win_rate']} | PnL %{w['total_pnl_percent']}")
+    lines.append("")
+    lines.append("🏆 ELITE")
+    if data["elite"]:
+        for w in data["elite"][:5]:
+            lines.append(
+                f"{w['wallet']} | WR %{w['win_rate']} | PnL %{w['total_pnl_percent']}"
+            )
+    else:
+        lines.append("Elite yok")
 
-    lines.append("\n👀 TAKİP")
-    for w in data["watch"][:5]:
-        lines.append(f"{w['wallet']} | WR %{w['win_rate']} | PnL %{w['total_pnl_percent']}")
+    lines.append("")
+    lines.append("👀 TAKİP")
+    if data["watch"]:
+        for w in data["watch"][:5]:
+            lines.append(
+                f"{w['wallet']} | WR %{w['win_rate']} | PnL %{w['total_pnl_percent']}"
+            )
+    else:
+        lines.append("Takip yok")
 
     return "\n".join(lines)
 
-# =========================================================
-# RUN
-# =========================================================
 
 if __name__ == "__main__":
     trades = load_trades()
     result = split_whales(trades)
-
     save_output(result)
 
     msg = build_msg(result)
+    print(msg)
     send_telegram(msg)
